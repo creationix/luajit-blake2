@@ -217,22 +217,30 @@ end
 new_ctx = ffi.metatype('blake2s_ctx', { __index = Blake2s })
 
 local function test(input, key, expected)
+  collectgarbage("collect")
   local raw = input:gsub('..', function (b)
     return char(tonumber(b, 16))
   end)
+  collectgarbage("collect")
   if key then
     key = key:gsub('..', function (b)
       return char(tonumber(b, 16))
     end)
   end
+  collectgarbage("collect")
   local b = Blake2s.new(32, key)
+  collectgarbage("collect")
   b:update(raw)
+  collectgarbage("collect")
   local output = b:digest 'hex'
+  collectgarbage("collect")
   p(#raw)
   print(expected)
   print(output)
   assert(expected == output)
+  collectgarbage("collect")
 end
+
 
 test(
   "",
