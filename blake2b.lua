@@ -1,273 +1,279 @@
+local stdout = require('pretty-print').stdout
 local bit = require 'bit'
+local ffi = require 'ffi'
 local ror = bit.ror
 local lshift = bit.lshift
 local rshift = bit.rshift
 local bxor = bit.bxor
 local band = bit.band
 local bor = bit.bor
+local bnot = bit.bnot
 local format = string.format
+local char = string.char
 local concat = table.concat
-
-local ffi = require 'ffi'
-local C = ffi.C
 local copy = ffi.copy
 local fill = ffi.fill
 local sizeof = ffi.sizeof
 local new = ffi.new
-local cdef = ffi.cdef
-local metatype = ffi.metatype
 
-cdef[[
-  enum blake2s_constant {
-    BLAKE2S_BLOCKBYTES = 64,
-    BLAKE2S_OUTBYTES   = 32,
-    BLAKE2S_KEYBYTES   = 32,
-    BLAKE2S_SALTBYTES  = 8,
-    BLAKE2S_PERSONALBYTES = 8
-  };
-
+ffi.cdef[[
   typedef struct {
-    uint32_t h[8];
-    uint32_t t[2];
-    uint32_t f[2];
-    uint8_t  buf[BLAKE2S_BLOCKBYTES];
-    size_t   buflen;
-    size_t   outlen;
-    uint8_t  last_node;
-  } blake2s_state;
-
+    uint8_t b[64];                      // input buffer
+    uint32_t h[8];                      // chained state
+    uint32_t t[2];                      // total number of bytes
+    size_t c;                           // pointer for b[]
+    size_t outlen;                      // digest size
+  } blake2s_ctx;
 ]]
 
 local IV = new('uint32_t[8]', {
-  0x6A09E667, 0xBB67AE85, 0x3C6EF372, 0xA54FF53A,
-  0x510E527F, 0x9B05688C, 0x1F83D9AB, 0x5BE0CD19
+  0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a,
+  0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19
 })
 
 local sigma = new('uint8_t[10][16]', {
-  {  0,  1,  2,  3,  4,  5,  6,  7,  8,  9, 10, 11, 12, 13, 14, 15 } ,
-  { 14, 10,  4,  8,  9, 15, 13,  6,  1, 12,  0,  2, 11,  7,  5,  3 } ,
-  { 11,  8, 12,  0,  5,  2, 15, 13, 10, 14,  3,  6,  7,  1,  9,  4 } ,
-  {  7,  9,  3,  1, 13, 12, 11, 14,  2,  6,  5, 10,  4,  0, 15,  8 } ,
-  {  9,  0,  5,  7,  2,  4, 10, 15, 14,  1, 11, 12,  6,  8,  3, 13 } ,
-  {  2, 12,  6, 10,  0, 11,  8,  3,  4, 13,  7,  5, 15, 14,  1,  9 } ,
-  { 12,  5,  1, 15, 14, 13,  4, 10,  0,  7,  6,  3,  9,  2,  8, 11 } ,
-  { 13, 11,  7, 14, 12,  1,  3,  9,  5,  0, 15,  4,  8,  6,  2, 10 } ,
-  {  6, 15, 14,  9, 11,  3,  0,  8, 12,  2, 13,  7,  1,  4, 10,  5 } ,
-  { 10,  2,  8,  4,  7,  6,  1,  5, 15, 11,  9, 14,  3, 12, 13 , 0 } ,
+  { 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15 },
+  { 14, 10, 4, 8, 9, 15, 13, 6, 1, 12, 0, 2, 11, 7, 5, 3 },
+  { 11, 8, 12, 0, 5, 2, 15, 13, 10, 14, 3, 6, 7, 1, 9, 4 },
+  { 7, 9, 3, 1, 13, 12, 11, 14, 2, 6, 5, 10, 4, 0, 15, 8 },
+  { 9, 0, 5, 7, 2, 4, 10, 15, 14, 1, 11, 12, 6, 8, 3, 13 },
+  { 2, 12, 6, 10, 0, 11, 8, 3, 4, 13, 7, 5, 15, 14, 1, 9 },
+  { 12, 5, 1, 15, 14, 13, 4, 10, 0, 7, 6, 3, 9, 2, 8, 11 },
+  { 13, 11, 7, 14, 12, 1, 3, 9, 5, 0, 15, 4, 8, 6, 2, 10 },
+  { 6, 15, 14, 9, 11, 3, 0, 8, 12, 2, 13, 7, 1, 4, 10, 5 },
+  { 10, 2, 8, 4, 7, 6, 1, 5, 15, 11, 9, 14, 3, 12, 13, 0 }
 })
 
-local function G(r, i, m, a, b, c, d)
-    a = a + b + m[sigma[r][2 * i]]
-    d = ror(bxor(d, a), 16)
-    c = c + d
-    b = ror(bxor(b, c), 12)
-    a = a + b + m[sigma[r][2 * i + 1]]
-    d = ror(bxor(d, a), 8)
-    c = c + d
-    b = ror(bxor(b, c), 7)
-    return a, b, c, d
+-- Little-endian byte access.
+local function get32(ptr)
+  return bor(
+    ptr[0],
+    lshift(ptr[1], 8),
+    lshift(ptr[2], 16),
+    lshift(ptr[3], 24)
+  )
 end
 
-local function ROUND(r, m, v)
-  v[0], v[4], v[8], v[12] = G(r, 0, m, v[0], v[4], v[8], v[12])
-  v[1], v[5], v[9], v[13] = G(r, 1, m, v[1], v[5], v[9], v[13])
-  v[2], v[6], v[10], v[14] = G(r, 2, m, v[2], v[6], v[10], v[14])
-  v[3], v[7], v[11], v[15] = G(r, 3, m, v[3], v[7], v[11], v[15])
-  v[0], v[5], v[10], v[15] = G(r, 4, m, v[0], v[5], v[10], v[15])
-  v[1], v[6], v[11], v[12] = G(r, 5, m, v[1], v[6], v[11], v[12])
-  v[2], v[7], v[8], v[13] = G(r, 6, m, v[2], v[7], v[8], v[13])
-  v[3], v[4], v[9], v[14] = G(r, 7, m, v[3], v[4], v[9], v[14])
-end
+local new_ctx
 
-local State = {}
-
-function State:update(chunk)
-  assert(self.f[0] == 0, 'hash already finialized')
-  if type(chunk) == 'string' then
-    chunk = new('uint8_t[?]', #chunk, chunk)
-  end
-  local len = sizeof(chunk)
-  if len == 0 then return end
-  local left = self.buflen
-  local tofill = C.BLAKE2S_BLOCKBYTES - left
-  if len > tofill then
-    self.buflen = 0
-    copy(self.buf + left, chunk, tofill)
-    self:increment_counter(C.BLAKE2S_BLOCKBYTES)
-    self:compress(self.buf)
-    chunk = chunk + tofill
-    len = len - tofill
-    while len > C.BLAKE2S_BLOCKBYTES do
-      self:increment_counter(C.BLAKE2S_BLOCKBYTES)
-      self:compress(chunk)
-      chunk = chunk + C.BLAKE2S_BLOCKBYTES
-      len = len - C.BLAKE2S_BLOCKBYTES
+local function dump(header, data, w)
+  stdout:write(header)
+  for i = 0, w - 1 do
+    stdout:write(format(' %08X', data[i]))
+    if i % 6 == 5 then
+      stdout:write '\n               '
     end
   end
-  copy(self.buf + self.buflen, chunk, len)
-  self.buflen = self.buflen + len
+  stdout:write '\n\n'
 end
 
-function State:digest(outform)
-  if self.f[0] == 0 then
-    self.f[0] = 1 -- set lastblock
+local v = new 'uint32_t[16]'
+local m = new 'uint32_t[16]'
 
-    self:increment_counter(self.buflen)
-
-    fill(self.buf + self.buflen, C.BLAKE2S_BLOCKBYTES - self.buflen, 0)
-    self:compress(self.buf)
-  end
-
-  local buffer = new 'uint8_t[BLAKE2S_OUTBYTES]'
-  for i = 0, 7 do
-    local word = self.h[i]
-    local o = i * 4
-    buffer[o] = band(word, 0xff)
-    buffer[o + 1] = band(rshift(word, 8), 0xff)
-    buffer[o + 2] = band(rshift(word, 16), 0xff)
-    buffer[o + 3] = rshift(word, 24)
-  end
-
-  if outform == 'string' then
-    return ffi.string(buffer, self.outlen)
-  end
-  if outform == 'hex' then
-    local hex = {}
-    for i = 1, tonumber(self.outlen) do
-      hex[i] = format("%02x", buffer[i - 1])
-    end
-    return concat(hex)
-  end
-  if self.outlen == C.BLAKE2S_OUTBYTES then
-    return buffer
-  end
-  local hash = new('uint8_t[?]', self.outlen)
-  copy(hash, buffer, self.outlen)
-  return hash
+-- Mixing function G.
+local function G(a, b, c, d, x, y)
+    v[a] = v[a] + v[b] + x
+    v[d] = ror(bxor(v[d], v[a]), 16)
+    v[c] = v[c] + v[d]
+    v[b] = ror(bxor(v[b], v[c]), 12)
+    v[a] = v[a] + v[b] + y
+    v[d] = ror(bxor(v[d], v[a]), 8)
+    v[c] = v[c] + v[d]
+    v[b] = ror(bxor(v[b], v[c]), 7)
 end
 
-function State:increment_counter(inc)
-  self.t[0] = self.t[0] + inc
-  self.t[1] = self.t[1] + (self.t[0] < inc and 1 or 0)
+local function ROUND(i)
+  -- dump(string.format(' (i=%d)  v[16] =', i), v, 16)
+  G(0, 4,  8, 12, m[sigma[i][ 0]], m[sigma[i][ 1]])
+  -- dump(string.format(' (i=%d)     v1 =', i), v, 16)
+  G(1, 5,  9, 13, m[sigma[i][ 2]], m[sigma[i][ 3]])
+  -- dump(string.format(' (i=%d)     v2 =', i), v, 16)
+  G(2, 6, 10, 14, m[sigma[i][ 4]], m[sigma[i][ 5]])
+  -- dump(string.format(' (i=%d)     v3 =', i), v, 16)
+  G(3, 7, 11, 15, m[sigma[i][ 6]], m[sigma[i][ 7]])
+  -- dump(string.format(' (i=%d)     v4 =', i), v, 16)
+  G(0, 5, 10, 15, m[sigma[i][ 8]], m[sigma[i][ 9]])
+  -- dump(string.format(' (i=%d)     v5 =', i), v, 16)
+  G(1, 6, 11, 12, m[sigma[i][10]], m[sigma[i][11]])
+  -- dump(string.format(' (i=%d)     v6 =', i), v, 16)
+  G(2, 7,  8, 13, m[sigma[i][12]], m[sigma[i][13]])
+  -- dump(string.format(' (i=%d)     v7 =', i), v, 16)
+  G(3, 4,  9, 14, m[sigma[i][14]], m[sigma[i][15]])
+  -- dump(string.format(' (i=%d)     v8 =', i), v, 16)
 end
 
-function State:compress(block)
-  local m = new 'uint32_t[16]'
-  local v = new 'uint32_t[16]'
+local Blake2s = {}
 
-  for i = 0, 15 do
-    local mem = block + i * 4
-    m[i] = bor(
-      mem[3],
-      lshift(mem[2], 8),
-      lshift(mem[1], 16),
-      lshift(mem[0], 24)
-    )
-  end
+function Blake2s:compress(is_last)
 
-  for i = 0, 7 do
+  for i = 0, 7 do -- init work variables
     v[i] = self.h[i]
+    v[i + 8] = IV[i]
   end
 
-  v[8] = IV[0]
-  v[9] = IV[1]
-  v[10] = IV[2]
-  v[11] = IV[3]
-  v[12] = bxor(self.t[0], IV[4])
-  v[13] = bxor(self.t[1], IV[5])
-  v[14] = bxor(self.f[0], IV[6])
-  v[15] = bxor(self.f[1], IV[7])
+  v[12] = bxor(v[12], self.t[0]) -- low 32 bits of offset
+  v[13] = bxor(v[13], self.t[1]) -- high 32 bits
 
-  ROUND(0, m, v)
-  ROUND(1, m, v)
-  ROUND(2, m, v)
-  ROUND(3, m, v)
-  ROUND(4, m, v)
-  ROUND(5, m, v)
-  ROUND(6, m, v)
-  ROUND(7, m, v)
-  ROUND(8, m, v)
-  ROUND(9, m, v)
+  if is_last then -- last block flag set ?
+    v[14] = bnot(v[14])
+  end
+
+  for i = 0, 15 do -- get little-endian words
+    m[i] = get32(self.b + 4 * i)
+  end
+
+  -- dump('        m[16] =', m, 16)
+
+  for i = 0, 9 do -- ten rounds
+    ROUND(i)
+  end
+
+  -- dump(' (i=10) v[16] =', v, 16)
 
   for i = 0, 7 do
     self.h[i] = bxor(self.h[i], v[i], v[i + 8])
   end
+
+  -- dump('         h[8] =', self.h, 8)
+
 end
 
-
-metatype('blake2s_state', { __index = State })
-
-local function init(outlen, key)
+function Blake2s.new(outlen, key)
   if not outlen then outlen = 32 end
-  assert(type(outlen) == 'number' and
-    outlen > 0 and outlen <= C.BLAKE2S_OUTBYTES, 'Invalid hash length')
-  if type(key) == 'string' then
-    key = new('uint8_t[?]', #key, key)
+  assert(type(outlen) == 'number' and outlen > 0 and outlen <= 32)
+  if type(key) == 'string' then key = new('uint8_t[?]', #key, key) end
+  local keylen = key and sizeof(key) or 0
+
+  local ctx = new_ctx()
+
+  copy(ctx.h, IV, sizeof(IV)) -- state, "param block"
+
+  ctx.h[0] = bxor(ctx.h[0], 0x01010000, lshift(keylen, 8), outlen)
+  ctx.t[0] = 0 -- input count low word
+  ctx.t[1] = 0 -- input count high word
+  ctx.c = 0    -- pointer within buffer
+  ctx.outlen = outlen
+
+  if keylen > 0 then
+      ctx:update(key)
+      ctx.c = 64 -- at the end
   end
 
-  local S = new 'blake2s_state'
+  return ctx
+end
 
-  -- Copy IV to reset state
-  copy(S.h, IV, sizeof(IV))
+function Blake2s:update(input)
+  if type(input) == 'string' then
+    input = new('uint8_t[?]', #input, input)
+  end
 
-  -- Store outlen
-  S.outlen = outlen
+  for i = 0, sizeof(input) - 1 do
+    if self.c == 64 then
+      self.t[0] = self.t[0] + self.c
+      if self.t[0] < self.c then
+        self.t[1] = self.t[1] + 1
+      end
+      self.c = 0
+      self:compress(false)
+    end
+    self.b[self.c] = input[i]
+    self.c = self.c + 1
+  end
+end
 
-  -- Mix in shared params
-  S.h[0] = bxor(S.h[0], 0x01010000, S.outlen)
+function Blake2s:digest(form)
+  self.t[0] = self.t[0] + self.c
+  if self.t[0] < self.c then
+    self.t[1] = self.t[1] + 1
+  end
 
+
+  while self.c < 64 do -- fill up with zeros
+    self.b[self.c] = 0
+    self.c = self.c + 1
+  end
+
+  self:compress(true)
+
+  -- little endian convert and store
+  local out = new('uint8_t[?]', self.outlen)
+  for i = 0, tonumber(self.outlen) - 1 do
+    out[i] = rshift(self.h[rshift(i, 2)], 8 * band(i, 3))
+  end
+
+  if form == 'string' then
+    return ffi.string(out, self.outlen)
+  end
+  if form == 'hex' then
+    local hex = {}
+    for i = 1, tonumber(self.outlen) do
+      hex[i] = format("%02x", out[i - 1])
+    end
+    return concat(hex)
+  end
+  return out
+end
+
+new_ctx = ffi.metatype('blake2s_ctx', { __index = Blake2s })
+
+local function test(input, key, expected)
+  local raw = input:gsub('..', function (b)
+    return char(tonumber(b, 16))
+  end)
   if key then
-    -- Mix in keylen param
-    local keylen = sizeof(key)
-    S.h[0] = bxor(S.h[0], lshift(band(keylen, 0xff), 8))
-    -- Apply key as hash block
-    local block = new 'uint8_t[BLAKE2S_BLOCKBYTES]'
-    copy(block, key, keylen)
-    S:update(block)
+    key = key:gsub('..', function (b)
+      return char(tonumber(b, 16))
+    end)
   end
-
-  return S
+  local b = Blake2s.new(32, key)
+  b:update(raw)
+  local output = b:digest 'hex'
+  p(#raw)
+  print(expected)
+  print(output)
+  assert(expected == output)
 end
 
-local input = {
-    v1 =  { "" },
-    v2 =  { "abc" },
-    v3 =  { "test 123" },
-    v4 =  { "The quick brown fox jumps over the lazy dog" },
-    v5 =  { "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" }, -- string.rep("a", 62)
-    v6 =  { "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" }, -- string.rep("b", 63)
-    v7 =  { "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc" }, -- string.rep("c", 64)
-    v8 =  { "ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd" }, -- string.rep("d", 65)
-    v9 =  { "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee" }, -- string.rep("e", 66)
-    v10 = { "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff" }, -- string.rep("f", 126)
-    v11 = { "ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggg" }, -- string.rep("g", 127)
-    v12 = { "hhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhh" }, -- string.rep("h", 128)
-    v13 = { "iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii" }, -- string.rep("i", 129)
-    v14 = { "jjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjj" }, -- string.rep("j", 130)
-}
+test(
+  "",
+  nil,
+  "69217a3079908094e11121d042354a7c1f55b6482ca1a51e1b250dfd1ed0eef9"
+)
+test(
+  "61",
+  nil,
+  "4a0d129873403037c2cd9b9048203687f6233fb6738956e0349bd4320fec3e90"
+)
+test(
+  "616263",
+  nil,
+  "508c5e8c327c14e2e1a72ba34eeb452f37458b209ed63a294d999b4c86675982"
+)
+test(
+  "6d65737361676520646967657374",
+  nil,
+  "fa10ab775acf89b7d3c8a6e823d586f6b67bdbac4ce207fe145b7d3ac25cd28c"
+)
+test(
+  "6162636465666768696a6b6c6d6e6f707172737475767778797a",
+  nil,
+  "bdf88eb1f86a0cdf0e840ba88fa118508369df186c7355b4b16cf79fa2710a12"
+)
+test(
+  "4142434445464748494a4b4c4d4e4f505152535455565758595a6162636465666768696a6b6c6d6e6f707172737475767778797a30313233343536373839",
+  nil,
+  "c75439ea17e1de6fa4510c335dc3d3f343e6f9e1ce2773e25b4174f1df8b119b"
+)
+test(
+  "3132333435363738393031323334353637383930313233343536373839303132333435363738393031323334353637383930313233343536373839303132333435363738393031323334353637383930",
+  nil,
+  "fdaedb290a0d5af9870864fec2e090200989dc9cd53a3c092129e8535e8b4f66"
+)
 
-local expected = {
-    v1 =  { "69217A3079908094E11121D042354A7C1F55B6482CA1A51E1B250DFD1ED0EEF9" },
-    v2 =  { "508C5E8C327C14E2E1A72BA34EEB452F37458B209ED63A294D999B4C86675982" },
-    v3 =  { "6FE6A61D36DD4F9BDD3999BD9E35C53ABC650AA1B926FCB5807DE7B5F1704FD1" },
-    v4 =  { "606BEEEC743CCBEFF6CBCDF5D5302AA855C256C29B88C8ED331EA1A6BF3C8812" },
-    v5 =  { "1109521FEED362D8AC50E28784406E8B8577E9103F74C7DDE7E7C5339A700E9F" },
-    v6 =  { "46BA9185AA823559D31B9682338353CB535CBA84648A575E29BE2DD2712F6CBC" },
-    v7 =  { "0D61429825CE22866DA7490E1369670E6F61BBCEA831266C96C9C5886A1481AF" },
-    v8 =  { "B39A9D609FED058837E9D4F85BFC5723A67C01B98919086B3D4835D7C3F2E05D" },
-    v9 =  { "BEDB9C535E5D6AD5B77D26D51A456C0A36E1C2AA9B6135A91A97E6559BB91E36" },
-    v10 = { "F45DD7BFF0254F6DBE717F8D34B294BEEF0B63301C7465539E720E6C2CADAC43" },
-    v11 = { "7C1556AB3B3E4A511605AEE6431D5B1241351A40C82689731884FC1016581B49" },
-    v12 = { "3944F8F3203D6F46EFA0C094CC1E1DCAB26B8315584BE1190A8F44A3589AB87F" },
-    v13 = { "EFA4CF2F94691527C94550516BF0516B97A47A3993338E48C520939B86E433F2" },
-}
-
-for k, v in pairs(input) do
-  local h = init()
-  local data = unpack(v)
-  h:update(data)
-  print()
-  print(h:digest('hex'))
-  local e = unpack(expected[k])
-  print(e:lower())
-end
+coroutine.wrap(function ()
+  local vectors = require('coro-fs').readFile('blake2s-kat.txt')
+  for input, key, hash in vectors:gmatch("%s*in:%s*([^%s]+)%s*key:%s*([^%s]+)%s*hash:%s*([^%s]+)") do
+    test(input, key, hash)
+  end
+  -- print(vectors)
+end)()
