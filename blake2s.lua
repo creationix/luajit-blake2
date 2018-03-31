@@ -1,4 +1,3 @@
-local stdout = require('pretty-print').stdout
 local bit = require 'bit'
 local ffi = require 'ffi'
 local ror = bit.ror
@@ -9,7 +8,6 @@ local band = bit.band
 local bor = bit.bor
 local bnot = bit.bnot
 local format = string.format
-local char = string.char
 local concat = table.concat
 local copy = ffi.copy
 local fill = ffi.fill
@@ -56,16 +54,16 @@ end
 
 local new_ctx
 
-local function dump(header, data, w)
-  stdout:write(header)
-  for i = 0, w - 1 do
-    stdout:write(format(' %08X', data[i]))
-    if i % 6 == 5 then
-      stdout:write '\n               '
-    end
-  end
-  stdout:write '\n\n'
-end
+-- local function dump(header, data, w)
+--   io.write(header)
+--   for i = 0, w - 1 do
+--     io.write(format(' %08X', data[i]))
+--     if i % 6 == 5 then
+--       io.write '\n               '
+--     end
+--   end
+--   io.write '\n\n'
+-- end
 
 local v = new 'uint32_t[16]'
 local m = new 'uint32_t[16]'
@@ -141,7 +139,12 @@ end
 function Blake2s.new(outlen, key)
   if not outlen then outlen = 32 end
   assert(type(outlen) == 'number' and outlen > 0 and outlen <= 32)
-  if type(key) == 'string' then key = new('uint8_t[?]', #key, key) end
+  if type(key) == 'string' then
+    local str = key
+    local len = #str
+    key = new('uint8_t[?]', #key)
+    copy(key, str, len)
+  end
   local keylen = key and sizeof(key) or 0
 
   local ctx = new_ctx()
@@ -164,7 +167,10 @@ end
 
 function Blake2s:update(input)
   if type(input) == 'string' then
-    input = new('uint8_t[?]', #input, input)
+    local str = input
+    local len = #str
+    input = new('uint8_t[?]', len)
+    copy(input, str, len)
   end
 
   for i = 0, sizeof(input) - 1 do
@@ -188,9 +194,8 @@ function Blake2s:digest(form)
   end
 
 
-  while self.c < 64 do -- fill up with zeros
-    self.b[self.c] = 0
-    self.c = self.c + 1
+  if self.c < 64 then -- fill up with zeros
+    fill(self.b + self.c, 64 - self.c)
   end
 
   self:compress(true)
@@ -214,74 +219,12 @@ function Blake2s:digest(form)
   return out
 end
 
-new_ctx = ffi.metatype('blake2s_ctx', { __index = Blake2s })
-
-local function test(input, key, expected)
-  collectgarbage("collect")
-  local raw = input:gsub('..', function (b)
-    return char(tonumber(b, 16))
-  end)
-  collectgarbage("collect")
-  if key then
-    key = key:gsub('..', function (b)
-      return char(tonumber(b, 16))
-    end)
-  end
-  collectgarbage("collect")
-  local b = Blake2s.new(32, key)
-  collectgarbage("collect")
-  b:update(raw)
-  collectgarbage("collect")
-  local output = b:digest 'hex'
-  collectgarbage("collect")
-  p(#raw)
-  print(expected)
-  print(output)
-  assert(expected == output)
-  collectgarbage("collect")
+function Blake2s.hash(data, outlen, key, form)
+  local h = Blake2s.new(outlen, key)
+  h:update(data)
+  return h:digest(form)
 end
 
+new_ctx = ffi.metatype('blake2s_ctx', { __index = Blake2s })
 
-test(
-  "",
-  nil,
-  "69217a3079908094e11121d042354a7c1f55b6482ca1a51e1b250dfd1ed0eef9"
-)
-test(
-  "61",
-  nil,
-  "4a0d129873403037c2cd9b9048203687f6233fb6738956e0349bd4320fec3e90"
-)
-test(
-  "616263",
-  nil,
-  "508c5e8c327c14e2e1a72ba34eeb452f37458b209ed63a294d999b4c86675982"
-)
-test(
-  "6d65737361676520646967657374",
-  nil,
-  "fa10ab775acf89b7d3c8a6e823d586f6b67bdbac4ce207fe145b7d3ac25cd28c"
-)
-test(
-  "6162636465666768696a6b6c6d6e6f707172737475767778797a",
-  nil,
-  "bdf88eb1f86a0cdf0e840ba88fa118508369df186c7355b4b16cf79fa2710a12"
-)
-test(
-  "4142434445464748494a4b4c4d4e4f505152535455565758595a6162636465666768696a6b6c6d6e6f707172737475767778797a30313233343536373839",
-  nil,
-  "c75439ea17e1de6fa4510c335dc3d3f343e6f9e1ce2773e25b4174f1df8b119b"
-)
-test(
-  "3132333435363738393031323334353637383930313233343536373839303132333435363738393031323334353637383930313233343536373839303132333435363738393031323334353637383930",
-  nil,
-  "fdaedb290a0d5af9870864fec2e090200989dc9cd53a3c092129e8535e8b4f66"
-)
-
-coroutine.wrap(function ()
-  local vectors = require('coro-fs').readFile('blake2s-kat.txt')
-  for input, key, hash in vectors:gmatch("%s*in:%s*([^%s]+)%s*key:%s*([^%s]+)%s*hash:%s*([^%s]+)") do
-    test(input, key, hash)
-  end
-  -- print(vectors)
-end)()
+return Blake2s
