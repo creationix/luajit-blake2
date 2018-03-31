@@ -1,3 +1,13 @@
+--[[lit-meta
+  name = "creationix/blake2s"
+  version = "1.0.0"
+  homepage = "https://github.com/creationix/luajit-blake2s"
+  description = "Pure luajit implementation of blake2s."
+  tags = {"hash", "blake2", "ffi", "luajit"}
+  license = "MIT"
+  author = { name = "Tim Caswell" }
+]]
+
 local bit = require 'bit'
 local ffi = require 'ffi'
 local ror = bit.ror
