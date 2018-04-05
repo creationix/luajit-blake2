@@ -1,6 +1,6 @@
 --[[lit-meta
   name = "creationix/blake2b"
-  version = "1.0.0"
+  version = "1.0.1"
   homepage = "https://github.com/creationix/luajit-blake2b"
   description = "Pure luajit implementation of blake2b."
   tags = {"hash", "blake2", "ffi", "luajit"}
@@ -22,7 +22,6 @@ local concat = table.concat
 local copy = ffi.copy
 local fill = ffi.fill
 local sizeof = ffi.sizeof
-local new = ffi.new
 
 ffi.cdef[[
   typedef struct {
@@ -34,14 +33,17 @@ ffi.cdef[[
   } blake2b_ctx;
 ]]
 
-local IV = new('uint64_t[8]', {
+local buffer = ffi.typeof 'uint8_t[?]'
+local u64 = ffi.typeof 'uint64_t'
+
+local IV = ffi.new('uint64_t[8]', {
   0x6A09E667F3BCC908ULL, 0xBB67AE8584CAA73BULL,
   0x3C6EF372FE94F82BULL, 0xA54FF53A5F1D36F1ULL,
   0x510E527FADE682D1ULL, 0x9B05688C2B3E6C1FULL,
   0x1F83D9ABFB41BD6BULL, 0x5BE0CD19137E2179ULL,
 })
 
-local sigma = new('uint8_t[12][16]', {
+local sigma = ffi.new('uint8_t[12][16]', {
   { 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15 },
   { 14, 10, 4, 8, 9, 15, 13, 6, 1, 12, 0, 2, 11, 7, 5, 3 },
   { 11, 8, 12, 0, 5, 2, 15, 13, 10, 14, 3, 6, 7, 1, 9, 4 },
@@ -59,14 +61,14 @@ local sigma = new('uint8_t[12][16]', {
 -- Little-endian byte access.
 local function get64(ptr)
   return bor(
-    0ull + ptr[0],
-    lshift(0ull + ptr[1], 8),
-    lshift(0ull + ptr[2], 16),
-    lshift(0ull + ptr[3], 24),
-    lshift(0ull + ptr[4], 32),
-    lshift(0ull + ptr[5], 40),
-    lshift(0ull + ptr[6], 48),
-    lshift(0ull + ptr[7], 56)
+    u64(ptr[0]),
+    lshift(u64(ptr[1]), 8),
+    lshift(u64(ptr[2]), 16),
+    lshift(u64(ptr[3]), 24),
+    lshift(u64(ptr[4]), 32),
+    lshift(u64(ptr[5]), 40),
+    lshift(u64(ptr[6]), 48),
+    lshift(u64(ptr[7]), 56)
   )
 end
 
@@ -86,8 +88,8 @@ local new_ctx
 --   io.write '\n\n'
 -- end
 
-local v = new 'uint64_t[16]'
-local m = new 'uint64_t[16]'
+local v = ffi.new 'uint64_t[16]'
+local m = ffi.new 'uint64_t[16]'
 
 -- Mixing function G.
 local function G(a, b, c, d, x, y)
@@ -163,7 +165,7 @@ function Blake2b.new(outlen, key)
   if type(key) == 'string' then
     local str = key
     local len = #str
-    key = new('uint8_t[?]', #key)
+    key = buffer(#key)
     copy(key, str, len)
   end
   local keylen = key and sizeof(key) or 0
@@ -190,7 +192,7 @@ function Blake2b:update(input)
   if type(input) == 'string' then
     local str = input
     local len = #str
-    input = new('uint8_t[?]', len)
+    input = buffer(len)
     copy(input, str, len)
   end
 
@@ -222,7 +224,7 @@ function Blake2b:digest(form)
   self:compress(true)
 
   -- little endian convert and store
-  local out = new('uint8_t[?]', self.outlen)
+  local out = buffer(self.outlen)
   for i = 0, tonumber(self.outlen) - 1 do
     out[i] = rshift(self.h[rshift(i, 3)], 8 * band(i, 7))
   end

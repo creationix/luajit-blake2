@@ -1,6 +1,6 @@
 --[[lit-meta
   name = "creationix/blake2s"
-  version = "1.0.0"
+  version = "1.0.1"
   homepage = "https://github.com/creationix/luajit-blake2s"
   description = "Pure luajit implementation of blake2s."
   tags = {"hash", "blake2", "ffi", "luajit"}
@@ -22,7 +22,6 @@ local concat = table.concat
 local copy = ffi.copy
 local fill = ffi.fill
 local sizeof = ffi.sizeof
-local new = ffi.new
 
 ffi.cdef[[
   typedef struct {
@@ -34,12 +33,14 @@ ffi.cdef[[
   } blake2s_ctx;
 ]]
 
-local IV = new('uint32_t[8]', {
+local buffer = ffi.typeof 'uint8_t[?]'
+
+local IV = ffi.new('uint32_t[8]', {
   0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a,
   0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19
 })
 
-local sigma = new('uint8_t[10][16]', {
+local sigma = ffi.new('uint8_t[10][16]', {
   { 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15 },
   { 14, 10, 4, 8, 9, 15, 13, 6, 1, 12, 0, 2, 11, 7, 5, 3 },
   { 11, 8, 12, 0, 5, 2, 15, 13, 10, 14, 3, 6, 7, 1, 9, 4 },
@@ -75,8 +76,8 @@ local new_ctx
 --   io.write '\n\n'
 -- end
 
-local v = new 'uint32_t[16]'
-local m = new 'uint32_t[16]'
+local v = ffi.new 'uint32_t[16]'
+local m = ffi.new 'uint32_t[16]'
 
 -- Mixing function G.
 local function G(a, b, c, d, x, y)
@@ -152,7 +153,7 @@ function Blake2s.new(outlen, key)
   if type(key) == 'string' then
     local str = key
     local len = #str
-    key = new('uint8_t[?]', #key)
+    key = buffer(#key)
     copy(key, str, len)
   end
   local keylen = key and sizeof(key) or 0
@@ -179,7 +180,7 @@ function Blake2s:update(input)
   if type(input) == 'string' then
     local str = input
     local len = #str
-    input = new('uint8_t[?]', len)
+    input = buffer(len)
     copy(input, str, len)
   end
 
@@ -211,7 +212,7 @@ function Blake2s:digest(form)
   self:compress(true)
 
   -- little endian convert and store
-  local out = new('uint8_t[?]', self.outlen)
+  local out = buffer(self.outlen)
   for i = 0, tonumber(self.outlen) - 1 do
     out[i] = rshift(self.h[rshift(i, 2)], 8 * band(i, 3))
   end
