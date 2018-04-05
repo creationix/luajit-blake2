@@ -16,7 +16,7 @@ should be much faster here due to the bitops being native.
 
 Since then I learned that Luajit 2.1 beta does have 64-bit operations and added
 a blake2b version for people running the latest Luajit.  Usage is identical,
-simply replace
+simply replace the `s` with a `b`.
 
 This was developed to aid in portable content-addressable network protocols and
 file-systems for luvi apps, but it can be used anywhere where a strong hash is
