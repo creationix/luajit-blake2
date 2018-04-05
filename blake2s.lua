@@ -25,11 +25,11 @@ local sizeof = ffi.sizeof
 
 ffi.cdef[[
   typedef struct {
-    uint8_t b[64];                      // input buffer
-    uint32_t h[8];                      // chained state
-    uint32_t t[2];                      // total number of bytes
-    size_t c;                           // pointer for b[]
-    size_t outlen;                      // digest size
+    uint8_t b[64]; // input buffer
+    uint32_t h[8]; // chained state
+    uint32_t t[2]; // total number of bytes
+    size_t c;      // pointer for b[]
+    size_t outlen; // digest size
   } blake2s_ctx;
 ]]
 
