@@ -1,6 +1,6 @@
 --[[lit-meta
   name = "creationix/blake2s"
-  version = "1.0.1"
+  version = "1.0.2"
   homepage = "https://github.com/creationix/luajit-blake2s"
   description = "Pure luajit implementation of blake2s."
   tags = {"hash", "blake2", "ffi", "luajit"}
@@ -17,6 +17,7 @@ local bxor = bit.bxor
 local band = bit.band
 local bor = bit.bor
 local bnot = bit.bnot
+local tobit = bit.tobit
 local format = string.format
 local concat = table.concat
 local copy = ffi.copy
@@ -81,13 +82,13 @@ local m = ffi.new 'uint32_t[16]'
 
 -- Mixing function G.
 local function G(a, b, c, d, x, y)
-    v[a] = v[a] + v[b] + x
+    v[a] = tobit(v[a] + v[b] + x)
     v[d] = ror(bxor(v[d], v[a]), 16)
-    v[c] = v[c] + v[d]
+    v[c] = tobit(v[c] + v[d])
     v[b] = ror(bxor(v[b], v[c]), 12)
-    v[a] = v[a] + v[b] + y
+    v[a] = tobit(v[a] + v[b] + y)
     v[d] = ror(bxor(v[d], v[a]), 8)
-    v[c] = v[c] + v[d]
+    v[c] = tobit(v[c] + v[d])
     v[b] = ror(bxor(v[b], v[c]), 7)
 end
 
