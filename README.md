@@ -37,7 +37,7 @@ between 1 and 32 bytes long (up to 64 bytes with blake2b).  An optional key
 gives keyed HMAC properties. The output form can be `string`, `hex` or default
 as a ctype `uint8_t[outlen]`
 
-``lua
+```lua
 local Blake2s = require 'blake2s'
 
 local data = "Hello World\n"
